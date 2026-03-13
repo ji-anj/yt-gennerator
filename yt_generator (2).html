@@ -1,0 +1,230 @@
+<html>
+<head>
+  <link href="https://fonts.googleapis.com/css2?family=VT323&display=swap" rel="stylesheet">
+  <style>
+    * { font-family:'VT323',monospace !important; box-sizing:border-box; }
+    body { background:black; color:#00ffcc; text-align:center; padding:20px; overflow-x:hidden; }
+    h1 { font-size:36px; margin-bottom:10px; text-shadow:0 0 5px #00ffcc; }
+    button {
+      font-size:24px; padding:14px 30px; margin:5px;
+      background:#ff0000; color:white; border:3px solid white; cursor:pointer;
+      transition: 0.2s all;
+    }
+    button:hover { transform: scale(1.1); border-color:yellow; box-shadow:0 0 10px #ff0; }
+    .video-wrapper { position:relative; width:80%; margin:0 auto; }
+    #player { width:100%; height:450px; border:4px solid #00ffcc; background:black; }
+    .overlay {
+      position:absolute; inset:0; background:rgba(0,0,0,0.85);
+      align-items:center; justify-content:center;
+      font-size:64px; color:yellow; z-index:4; pointer-events:none; display:none;
+      animation: blink 1s infinite;
+    }
+    .click-block { position:absolute; inset:0; z-index:3; background:transparent; display:none; }
+    #title {
+      font-size:20px; color:#00ffcc; margin-top:10px;
+      text-shadow:0 0 5px #00ffcc;
+      animation: marquee 8s linear infinite, colorCycle 4s infinite alternate;
+      overflow:hidden; white-space:nowrap;
+    }
+    #score { font-size:24px; color:#ff0; text-shadow:0 0 5px #ff0; margin-bottom:10px; }
+    @keyframes blink { 0%,50%,100%{opacity:1;}25%,75%{opacity:0.5;} }
+    @keyframes marquee { 0%{transform:translateX(100%);}100%{transform:translateX(-100%);} }
+    @keyframes colorCycle { 0%{color:#00ffcc;}50%{color:#ff0;}100%{color:#f0f;} }
+    .particle { position:absolute; width:6px; height:6px; border-radius:50%; opacity:0.8; z-index:5; }
+    .emoji { position:absolute; font-size:24px; opacity:0.9; z-index:6; }
+  </style>
+</head>
+<body>
+
+<h1>Random YouTube Vid Generator 🎥</h1>
+<div id="score">Score: 0</div>
+<button onclick="startCountdown()">▶ NEW VIDEO</button>
+<button onclick="toggleMute()">🔊 Sound</button>
+
+<div class="video-wrapper">
+  <div id="overlay" class="overlay"></div>
+  <div id="clickBlock" class="click-block"></div>
+  <div id="player"></div>
+</div>
+<div id="title"></div>
+
+<script src="https://www.youtube.com/iframe_api"></script>
+<script>
+const API_KEY = "AIzaSyAPF1pLCENpeYF_zo6TIhssW31lkbsnOBc";
+
+const SEARCH_TERMS = [
+  "funny moments", "amazing fails", "cool science", "street food", "travel vlog",
+  "satisfying video", "unexpected", "world record", "cat video", "crazy skills",
+  "nature documentary", "life hack", "magic trick", "street performance", "speed run"
+];
+
+const playedHistory = [];
+const MAX_HISTORY = 15;
+
+let player = null;
+let playerReady = false;
+let audioCtx = null;
+let muted = false;
+let countdownActive = false;
+let score = 0;
+
+function onYouTubeIframeAPIReady() {
+  player = new YT.Player('player', {
+    height: '450', width: '100%',
+    videoId: '',
+    playerVars: { autoplay: 1, controls: 1 },
+    events: {
+      onReady: () => { playerReady = true; },
+      onError: (e) => {
+        console.warn("Player error:", e.data);
+        // Auto skip on any playback error
+        launchVideo();
+      }
+    }
+  });
+}
+
+async function fetchRandomVideo() {
+  const term = SEARCH_TERMS[Math.floor(Math.random() * SEARCH_TERMS.length)];
+  const searchUrl = `https://www.googleapis.com/youtube/v3/search?part=snippet&q=${encodeURIComponent(term)}&type=video&videoEmbeddable=true&maxResults=25&key=${API_KEY}`;
+  
+  const searchRes = await fetch(searchUrl);
+  const searchData = await searchRes.json();
+
+  if (!searchData.items || searchData.items.length === 0) {
+    throw new Error("No search results: " + JSON.stringify(searchData));
+  }
+
+  // Shuffle
+  const shuffled = searchData.items.sort(() => Math.random() - 0.5);
+  const pool = shuffled.filter(i => !playedHistory.includes(i.id.videoId));
+  const batch = (pool.length > 0 ? pool : shuffled).slice(0, 10);
+
+  // Verify embeddable via videos endpoint
+  const ids = batch.map(i => i.id.videoId).join(",");
+  const titlesMap = Object.fromEntries(batch.map(i => [i.id.videoId, i.snippet.title]));
+
+  const verifyUrl = `https://www.googleapis.com/youtube/v3/videos?part=status&id=${ids}&key=${API_KEY}`;
+  const verifyRes = await fetch(verifyUrl);
+  const verifyData = await verifyRes.json();
+
+  if (!verifyData.items) throw new Error("Verify failed: " + JSON.stringify(verifyData));
+
+  for (const item of verifyData.items) {
+    if (item.status && item.status.embeddable && !playedHistory.includes(item.id)) {
+      playedHistory.push(item.id);
+      if (playedHistory.length > MAX_HISTORY) playedHistory.shift();
+      return { id: item.id, title: titlesMap[item.id] };
+    }
+  }
+
+  // If nothing embeddable found, just use first result anyway
+  const first = batch[0];
+  return { id: first.id.videoId, title: first.snippet.title };
+}
+
+async function launchVideo() {
+  try {
+    const video = await fetchRandomVideo();
+    if (player && playerReady) {
+      player.loadVideoById({ videoId: video.id });
+      if (!muted) player.unMute();
+      player.playVideo();
+      document.getElementById("title").innerText = video.title;
+      score += Math.floor(Math.random() * 10) + 1;
+      document.getElementById("score").innerText = "Score: " + score;
+      createParticles();
+      createEmoji();
+    }
+  } catch(err) {
+    console.error("fetchRandomVideo error:", err);
+    document.getElementById("title").innerText = "⚠️ Error: " + err.message;
+  }
+}
+
+function beep(freq = 800, dur = 0.08) {
+  if (muted) return;
+  if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  const osc = audioCtx.createOscillator(), gain = audioCtx.createGain();
+  osc.type = "square"; osc.frequency.value = freq; gain.gain.value = 0.15;
+  osc.connect(gain); gain.connect(audioCtx.destination);
+  osc.start(); osc.stop(audioCtx.currentTime + dur);
+}
+
+function toggleMute() {
+  muted = !muted;
+  if (player && playerReady) {
+    muted ? player.mute() : player.unMute();
+  }
+}
+
+function startCountdown() {
+  if (countdownActive) return;
+  if (player && playerReady) player.stopVideo();
+
+  countdownActive = true;
+  let seconds = 5;
+
+  const overlay = document.getElementById("overlay");
+  const clickBlock = document.getElementById("clickBlock");
+  overlay.style.display = "flex";
+  overlay.style.alignItems = "center";
+  overlay.style.justifyContent = "center";
+  clickBlock.style.display = "block";
+  overlay.innerText = seconds;
+
+  beep();
+
+  const timer = setInterval(() => {
+    seconds--;
+    overlay.innerText = seconds > 0 ? seconds : "▶";
+
+    if (seconds <= 3 && seconds > 0) beep(1200, 0.05);
+    else if (seconds > 0) beep(800, 0.08);
+
+    if (seconds <= 0) {
+      clearInterval(timer);
+
+      // Keep overlay visible with spinner until video is ready
+      overlay.innerText = "⏳";
+
+      launchVideo().then(() => {
+        overlay.style.display = "none";
+        clickBlock.style.display = "none";
+        countdownActive = false;
+        beep(600, 0.15);
+      });
+    }
+  }, 1000);
+}
+
+function createParticles() {
+  const wrapper = document.querySelector('.video-wrapper');
+  for (let i = 0; i < 30; i++) {
+    const dot = document.createElement('div');
+    dot.className = 'particle';
+    dot.style.backgroundColor = ['#ff0','#0ff','#f0f','#0f0','#f00'][Math.floor(Math.random() * 5)];
+    dot.style.left = Math.random() * wrapper.offsetWidth + 'px';
+    dot.style.top = Math.random() * wrapper.offsetHeight + 'px';
+    wrapper.appendChild(dot);
+    setTimeout(() => dot.remove(), 1000);
+  }
+}
+
+function createEmoji() {
+  const wrapper = document.querySelector('.video-wrapper');
+  const emojis = ["💥","🎮","✨","🕹️"];
+  for (let i = 0; i < 5; i++) {
+    const e = document.createElement('div');
+    e.className = 'emoji';
+    e.innerText = emojis[Math.floor(Math.random() * emojis.length)];
+    e.style.left = Math.random() * wrapper.offsetWidth + 'px';
+    e.style.top = Math.random() * wrapper.offsetHeight + 'px';
+    wrapper.appendChild(e);
+    setTimeout(() => e.remove(), 2000);
+  }
+}
+</script>
+
+</body>
+</html>
